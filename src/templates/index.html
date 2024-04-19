@@ -1,244 +1,419 @@
 <!doctype html>
-
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  
-  <link rel="stylesheet" href="static/css/styles.css">
-
-  <title>Tibetan Boxing Tool</title>
-  <meta name="description" content="A tool to for putting boxes around Tibetan text in order to highlight the grammatical structure.">
-  <meta name="author" content="SitePoint">
-
-  <link rel="icon" href="static/favicon.png" type="image/png" sizes="16x16">
-
-  <style>
-      #textInput{
-          border: 0;
-          border-right: 1px solid black;
-          float:left;
-          width:44vw;
-          height:99vh;
-          font-size:1.5em;
-      }
-      #pdfOutput{
-          border:0;
-          width:54vw;
-          height:99vh;
-          float:right;
-      }
-
-      html, body, form{padding:0; margin:0}
-  </style>
-</head>
-
-<body>
-  <!-- input form and output iframe -->
-  <form name="editForm" id="editForm" action="generate#pagemode=none&toolbar=0&navpanes=0&scrollbar=1&view=fitH&statusbar=0&messages=0&nameddest=viewPosition" method="post" target="pdfOutput">
-    <textarea name="textInput" id="textInput">{{ welcome }}</textarea>
-    <input type="hidden" name="forceDownload" id="forceDownload" value="false" />
-    <input type="hidden" name="format" id="format" value="pdf" />
-    <input type="hidden" name="cursorLine" id="cursorLine" value="" />
-  </form>
-  <iframe src="static/blank.html" id="pdfOutput" name="pdfOutput"></iframe>
-
-  <!-- Hamburger menu -->
-  <div class="menu-container">
-    <div class="menu-btn">
-      <span class="bar1"></span>
-      <span class="bar2"></span>
-      <span class="bar3"></span>
-    </div>
-    
-    <div class="menu">
-      <ul>
-        <li><a href="#" id="action-restore">Restore Previous Work</a></li>
-        <li><a href="#" id="action-downloadpdf">Download PDF</a></li>
-        <li><a href="#" id="action-downloadlatex">Download LaTeX</a></li>
-      </ul>
-    </div>
-  </div>
-
-  <div id="restore-overlay" class="overlay">
-    <div class="restore-menu-wrapper">
-      <p>The application will save your work every 
-      minute and will remember your last ten minutes of work. 
-      If something goes wrong then you can restore a previous version of what you typed.</p>
-      <p>Choose a point in time that you want to restore:</p>
-
-      <ul class="restore-menu"></ul>
-
-      <a href="#" class='action-button'>Cancel</a>
-    </div>
-  </div>
-
-
-  <!-- script code -->
-  <script src="static/js/jquery-3.6.0.min.js"></script>
-  <script>
-    $(function() {
-      var SAVE_FREQUENCY = 60000; // create a save snapshot every 60 seconds
-      var HISTORY_SIZE = 10; // save up to 10 states
-      var DEBOUNCE_TIME = 500; // time after whuch the PDF is generated after the user stopped typing
-      var $editForm = $('#editForm');
-      var $textInput = $('#textInput');
-
-      // save / reload editor content
-      // -------------------------------------------------------------
-      var editHistory = [];
-      if (window.localStorage) {
-        savedState = window.localStorage.getItem("editHistory") || '[]';
-        editHistory = JSON.parse(savedState);
-      }
-
-      var autoSave = function(content) {
-        if (content && window.localStorage) {
-          console.log('autosave');
-          var now = Date.now();
-          var newestItem = editHistory.length ? editHistory[editHistory.length - 1] : null;
-
-          if(newestItem && now - newestItem.created <= SAVE_FREQUENCY) {
-            // latest history entry was created less than 1 minute ago. Keep updating it until it becomes 1 minute old
-            newestItem.updated = now;
-            newestItem.content = content;
-          } else {
-            // create new history item
-            newestItem = {created: now, updated: now, content: content};
-            editHistory.push(newestItem);
-            if (editHistory.length > HISTORY_SIZE) {
-              editHistory = editHistory.splice(1);
-            }
-          }
-          window.localStorage.setItem("editHistory", JSON.stringify(editHistory));
-          $('#action-restore').show()
-        }
-      };
-
-      var restoreItem = function(index) {
-        $textInput.val( editHistory[index].content );
-        doSendForm({forceSubmit:true, disableAutosave:true});
-      };
-      
-      var showRestoreMenu = function() {
-        $restoreMenu = $('#restore-overlay .restore-menu');
-        $restoreMenu.empty();
-        for(var i=editHistory.length - 1; i >= 0; i--) {
-          var updated = new Date(editHistory[i].updated);
-          console.log(updated);
-          var item = $('<li data-item="'+i+'">'+updated.toLocaleDateString()+' '+updated.toLocaleTimeString()+'</li>')
-          item.click(function(){ restoreItem($(this).attr('data-item')) });
-          $restoreMenu.append(item);
-        }
-
-        $('#restore-overlay').show().click(function() {$('#restore-overlay').hide()});
-      };
-
-
-      // handling of markdown input (automatic PDF generation and triggering of autosave)
-      var lastTyped = Date.now() - 1000;
-      var lastSubmitted = 0;
-      var lastSubmittedText = '';
-
-      function getCursorLine() {
-          var line = 0;
-          var cursorPos = $textInput[0].selectionStart;
-          var inputText = $textInput.val();
-          
-          for(var i=0;i<Math.min(cursorPos, inputText.length); i++) {
-              if(inputText[i] == '\n') {
-                  line++;
-              }
-          }
-          return line;
-      }
-
-      var getTopmostInputLine = function() {
-        var scrollPosPx = $textInput.scrollTop();
-        if(scrollPosPx == 0) {
-          return 0;
-        } else {
-          // determine which line roughly is the topmost line of the input window
-          // and calculate how that maps to the position in the overall file
-          var totalTextHeightPx = scrollPos + $textInput.height();
-          var textLines = $textInput.val().split('\n').length
-          return Math.floor( textLines * scrollPosPx / totalTextHeightPx );
-        }
-      }
-
-      var insertAnchor = function(text, anchorName, lineNr) {
-        var textLines = $textInput.val().split('\n').length
-        textLines = arr.splice(lineNr, 0, '##'+anchorName);
-        return "\n".join(textLines);
-      }
-
-      var doSendForm = function(options) {        
-        options = options || {};
-
-        if(!options.forceSubmit
-           && ( lastSubmitted > lastTyped || lastSubmittedText == $textInput.val())) {
-          // nothing more to do.
-          return;
-        }
-
-        if(options.forceSubmit || Date.now() - lastTyped >= DEBOUNCE_TIME) {
-          if($textInput.val() === '') {
-            console.log('text is empty');
-            lastSubmittedText = '';
-            $('#pdfOutput').attr('src','static/blank.html');
-          } else {
-            lastSubmittedText = $textInput.val();
-            lastSubmitted = Date.now();
+   <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <link rel="stylesheet" href="static/css/styles.css">
+      <title>Tibetan Boxing Tool</title>
+      <meta name="description" content="A tool to for putting boxes around Tibetan text in order to highlight the grammatical structure.">
+      <meta name="author" content="SitePoint">
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+      <link rel="icon" href="static/favicon.png" type="image/png" sizes="16x16">
+      <style>
+         #textInput{
+         border: 0;
+         border-right: 1px solid black;
+         float:left;
+         width:44vw;
+         height:99vh;
+         font-size:1.5em;
+         }
+         #pdfOutput{
+         border:0;
+         width:53vw;
+         height:99vh;
+         float:right;
+         }
+         #sidebar {
+         width: 250px;
+         height: 100%;
+         background-color: #ffffff;
+         position: fixed;
+         left: 0;
+         top: 0;
+         overflow-y: auto;
+         z-index: 1000;
+         box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+         padding-top: 20px;
+         }
+         #sidebar ul {
+         list-style: none;
+         padding-left: 20px;
+         }
+         #sidebar ul li {
+         margin-bottom: 10px;
+         }
+         #sidebar ul li a {
+         color: #333;
+         text-decoration: none;
+         display: block;
+         padding: 8px 10px;
+         border-radius: 4px;
+         transition: background-color 0.3s;
+         }
+         #sidebar ul li a i{
+         margin-right: 5px;
+         }
+         }
+         #sidebar ul li a:hover {
+         background-color: #f0f0f0;
+         }
+         #sidebar-container {
+         position: relative;
+         }
+         #sidebar-toggle {
+         position: absolute;
+         top: 10px;
+         left: 220px;
+         cursor: pointer;
+         z-index: 9000;
+         }
+         #textInput {
+         margin-left: 40px;
+         padding-top: 40px;
+         }
+         #sidebar-toggle.left {
+         /*right: auto;
+         left: 0px;
+         background-color: gray;
+         width: 30px;
+         height: 30px;*/
+         top: 0.25em;
+         left: 0px;
+         right: 1.25em;
+         height: 1.3em;
+         width: 1.3em;
+         padding: 0.6em;
+         background: #bbb;
+         position: absolute;
+         z-index: 1;
+         display: flex;
+         justify-content: space-evenly;
+         align-items: center;
+         flex-direction: column;
+         cursor: pointer;
+         }
+         #main-content {
+         padding: 20px;
+         margin-left: 220px;
+         transition: margin-left 0.3s ease;
+         }
+         #sidebar.sidebar-hidden {
+         left: -400px;
+         }
+         html, body, form{padding:0; margin:0}
+      </style>
+   </head>
+   <body>
+      <div id="sidebar-container">
+         <div id="sidebar-toggle">&#9776;</div>
+         <div id="sidebar">
+            <ul id="file-list">
+               <!-- <li>
+                  <a href="#"><i class="fas fa-folder icon"></i>Folder 1</a>
+                  <ul>
+                    <li><a href="#"><i class="far fa-file icon"></i>File 1.1</a></li>
+                    <li><a href="#"><i class="far fa-file icon"></i>File 1.2</a></li>
+                  </ul>
+                  </li>
+                  <li>
+                  <a href="#"><i class="fas fa-folder icon"></i>Folder 2</a>
+                  <ul>
+                    <li><a href="#"><i class="far fa-file icon"></i>File 2.1</a></li>
+                    <li><a href="#"><i class="far fa-file icon"></i>File 2.2</a></li>
+                  </ul>
+                  </li> -->
+               <!-- Add more folders and files as needed -->
+            </ul>
+         </div>
+      </div>
+      <!-- input form and output iframe -->
+      <form name="editForm" id="editForm" action="generate#pagemode=none&toolbar=0&navpanes=0&scrollbar=1&view=fitH&statusbar=0&messages=0&nameddest=viewPosition" method="post" target="pdfOutput">
+         <textarea name="textInput" id="textInput">{{ welcome }}</textarea>
+         <input type="hidden" name="forceDownload" id="forceDownload" value="false" />
+         <input type="hidden" name="format" id="format" value="pdf" />
+         <input type="hidden" name="cursorLine" id="cursorLine" value="" />
+      </form>
+      <iframe src="static/blank.html" id="pdfOutput" name="pdfOutput"></iframe>
+      <!-- Hamburger menu -->
+      <div class="menu-container">
+         <div class="menu-btn">
+            <span class="bar1"></span>
+            <span class="bar2"></span>
+            <span class="bar3"></span>
+         </div>
+         <div class="menu">
+            <ul>
+               <li><a href="#" id="action-restore">Restore Previous Work</a></li>
+               <li><a href="#" id="action-downloadpdf">Download PDF</a></li>
+               <li><a href="#" id="action-downloadlatex">Download LaTeX</a></li>
+               <li><a href="#" id="action-downloadmarkdown">Download MD</a></li>
+            </ul>
+         </div>
+      </div>
+      <div id="restore-overlay" class="overlay">
+         <div class="restore-menu-wrapper">
+            <p>The application will save your work every 
+               minute and will remember your last ten minutes of work. 
+               If something goes wrong then you can restore a previous version of what you typed.
+            </p>
+            <p>Choose a point in time that you want to restore:</p>
+            <ul class="restore-menu"></ul>
+            <a href="#" class='action-button'>Cancel</a>
+         </div>
+      </div>
+      <!-- script code -->
+      <script src="static/js/jquery-3.6.0.min.js"></script>
+      <script>
+         $(function() {
+           var SAVE_FREQUENCY = 60000; // create a save snapshot every 60 seconds
+           var HISTORY_SIZE = 10; // save up to 10 states
+           var DEBOUNCE_TIME = 500; // time after whuch the PDF is generated after the user stopped typing
+           var $editForm = $('#editForm');
+           var $textInput = $('#textInput');
+         
+           // save / reload editor content
+           // -------------------------------------------------------------
+           var editHistory = [];
+           if (window.localStorage) {
+             savedState = window.localStorage.getItem("editHistory") || '[]';
+             editHistory = JSON.parse(savedState);
+           }
+         
+           var autoSave = function(content) {
+             if (content && window.localStorage) {
+               console.log('autosave');
+               var now = Date.now();
+               var newestItem = editHistory.length ? editHistory[editHistory.length - 1] : null;
+         
+               if(newestItem && now - newestItem.created <= SAVE_FREQUENCY) {
+                 // latest history entry was created less than 1 minute ago. Keep updating it until it becomes 1 minute old
+                 newestItem.updated = now;
+                 newestItem.content = content;
+               } else {
+                 // create new history item
+                 newestItem = {created: now, updated: now, content: content};
+                 editHistory.push(newestItem);
+                 if (editHistory.length > HISTORY_SIZE) {
+                   editHistory = editHistory.splice(1);
+                 }
+               }
+               window.localStorage.setItem("editHistory", JSON.stringify(editHistory));
+               $('#action-restore').show()
+             }
+           };
+         
+           var restoreItem = function(index) {
+             $textInput.val( editHistory[index].content );
+             doSendForm({forceSubmit:true, disableAutosave:true});
+           };
+           
+           var showRestoreMenu = function() {
+             $restoreMenu = $('#restore-overlay .restore-menu');
+             $restoreMenu.empty();
+             for(var i=editHistory.length - 1; i >= 0; i--) {
+               var updated = new Date(editHistory[i].updated);
+               console.log(updated);
+               var item = $('<li data-item="'+i+'">'+updated.toLocaleDateString()+' '+updated.toLocaleTimeString()+'</li>')
+               item.click(function(){ restoreItem($(this).attr('data-item')) });
+               $restoreMenu.append(item);
+             }
+         
+             $('#restore-overlay').show().click(function() {$('#restore-overlay').hide()});
+           };
+         
+         
+           // handling of markdown input (automatic PDF generation and triggering of autosave)
+           var lastTyped = Date.now() - 1000;
+           var lastSubmitted = 0;
+           var lastSubmittedText = '';
+         
+           function getCursorLine() {
+               var line = 0;
+               var cursorPos = $textInput[0].selectionStart;
+               var inputText = $textInput.val();
+               
+               for(var i=0;i<Math.min(cursorPos, inputText.length); i++) {
+                   if(inputText[i] == '\n') {
+                       line++;
+                   }
+               }
+               return line;
+           }
+         
+           var getTopmostInputLine = function() {
+             var scrollPosPx = $textInput.scrollTop();
+             if(scrollPosPx == 0) {
+               return 0;
+             } else {
+               // determine which line roughly is the topmost line of the input window
+               // and calculate how that maps to the position in the overall file
+               var totalTextHeightPx = scrollPos + $textInput.height();
+               var textLines = $textInput.val().split('\n').length
+               return Math.floor( textLines * scrollPosPx / totalTextHeightPx );
+             }
+           }
+         
+           var insertAnchor = function(text, anchorName, lineNr) {
+             var textLines = $textInput.val().split('\n').length
+             textLines = arr.splice(lineNr, 0, '##'+anchorName);
+             return "\n".join(textLines);
+           }
+         
+           var doSendForm = function(options) {        
+             options = options || {};
+         
+             if(!options.forceSubmit
+                && ( lastSubmitted > lastTyped || lastSubmittedText == $textInput.val())) {
+               // nothing more to do.
+               return;
+             }
+         
+             if(options.forceSubmit || Date.now() - lastTyped >= DEBOUNCE_TIME) {
+               if($textInput.val() === '') {
+                 console.log('text is empty');
+                 lastSubmittedText = '';
+                 $('#pdfOutput').attr('src','static/blank.html');
+               } else {
+                 lastSubmittedText = $textInput.val();
+                 lastSubmitted = Date.now();
+                 
+                 $('#format').val(options.format || 'pdf');
+                 $('#forceDownload').val(options.forceDownload || false);
+                 $('#cursorLine').val(getCursorLine() || 0);
+                 $editForm.attr('target', options.forceDownload ? '_blank':'pdfOutput')
+         
+                 $editForm.submit();
+         
+                 if(!options.disableAutosave) {
+                   autoSave(lastSubmittedText);
+                 }
+         
+               }
+             } else {
+               // wait for debounce time
+               window.setTimeout(function(){doSendForm()}, DEBOUNCE_TIME * 1.1);          
+             }
+           };
+         
+           var sendForm = function() {
+             lastTyped = Date.now();
+             doSendForm();
+           }
+         
+           $editForm.change(sendForm);
+           $editForm.on('keyup', sendForm);
+         
+           doSendForm({forceSubmit:true, disableAutosave:true});
+         
+           // click handlers for hamburger menu
+           // -------------------------------------------------------------
+           $(".menu-btn").on("click", function(){
+             $(".menu-btn").toggleClass("close-btn");
+             $(".menu").toggleClass("open-menu");
+           }); 
+         
+           $('#action-downloadpdf').click(function() { doSendForm({forceSubmit:true, format:'pdf', forceDownload: true}) });
+           $('#action-downloadmarkdown').click(function() { doSendForm({forceSubmit:true, format:'md', forceDownload: true}) });
+           $('#action-downloadlatex').click(function() { doSendForm({forceSubmit:true, format:'latex', forceDownload: true}) });
+           $('#action-restore').click(function(){ showRestoreMenu() });
+           $('.menu a').click(function(){ 
+             $('.menu').removeClass('open-menu'); $('.menu-btn').removeClass('close-btn'); 
+           });
+           
+           if(editHistory.length) {
+             $('#action-restore').show();
+           }
+         
+           $('#sidebar-toggle').click(function() {
+             $('#sidebar').toggleClass('sidebar-hidden');
+             $('#sidebar-toggle').toggleClass('left');
+           });
+         
+           $.get('/get_files', function(data) {
+         
+             var fileList = $('#file-list');
+             console.log(data)
+             generateList(data, fileList);
+             //attachListeners();
+           });
+         });
+         
+         function generateList(data, parent) {
+           var topLevelData = filterLevel(data, 1);
+           generateSubList(topLevelData, parent, data);
+         }
+         
+         function filterLevel(data, level) {
+           return data.filter(function(item) {
+             return item.level === level;
+           });
+         }
+         
+         function generateSubList(data, parent, allData) {
+           var folderList = $('<ul></ul>');
+           $.each(data, function(index, item) {
+             var iconClass = item.type === 'folder' ? 'fas fa-folder' : 'far fa-file';
+             var listItem = $('<li><a href="#"><i class="' + iconClass + '"></i>' + item.name + '</a></li>');
+             if (item.type === 'folder') {
+               listItem.find('i').addClass('folder-toggle');
+               listItem.find('i').addClass('fa-folder');
+               listItem.children('a').on('click', function(){
+                 console.log(item)
+                 var subData = filterSubFolders(allData, item.level + 1, item.name);
+                 console.log(subData);
+         
+         
+                 var subList = $(this).siblings('ul');
+                 console.log(subList)
+                 if (subList.length === 0) {
+                   subList = $('<ul style="display: none;"></ul>');
+                   generateSubList(subData, subList, allData);
+                   $(this).parent().append(subList);
+         
+                   //$(this).find('i').toggleClass('fa-folder fa-folder-open');
+                 }
+                 subList.slideToggle();
+         
+                 if ($(this).find('i').hasClass('fa-folder')) {
+                     $(this).find('i').toggleClass('folder-toggle fa-folder-open');
+                 } 
+               });
+             }
+             folderList.append(listItem);
+         
+             if (item.type === 'file') {
+              listItem.children('a').on('click', function(){
+                 select_file(item.path)
+                 
+               });
+         
+           }
+           });
+         
+           parent.append(folderList);
+         }
+         
+         function filterSubFolders(data, level, folderName) {
+           return data.filter(function(item) {
+             return item.level == level && item.parent == folderName;
+           });
+         }
+         
+         function select_file(filePath) {
+         $.post('/read_file', { file_name: filePath }, function(data) {
+         
+           if(data.success) {
+             $('#textInput').val(data.file_contents).trigger('change');
+         
+           } else {
+             // Do something with the file contents
+             console.log(data);
+             }
+           });
+         }
+         
             
-            $('#format').val(options.format || 'pdf');
-            $('#forceDownload').val(options.forceDownload || false);
-            $('#cursorLine').val(getCursorLine() || 0);
-            $editForm.attr('target', options.forceDownload ? '_blank':'pdfOutput')
-
-            $editForm.submit();
-
-            if(!options.disableAutosave) {
-              autoSave(lastSubmittedText);
-            }
-
-          }
-        } else {
-          // wait for debounce time
-          window.setTimeout(function(){doSendForm()}, DEBOUNCE_TIME * 1.1);          
-        }
-      };
-
-      var sendForm = function() {
-        lastTyped = Date.now();
-        doSendForm();
-      }
-
-      $editForm.change(sendForm);
-      $editForm.on('keyup', sendForm);
-
-      doSendForm({forceSubmit:true, disableAutosave:true});
-
-      // click handlers for hamburger menu
-      // -------------------------------------------------------------
-      $(".menu-btn").on("click", function(){
-        $(".menu-btn").toggleClass("close-btn");
-        $(".menu").toggleClass("open-menu");
-      }); 
-
-      $('#action-downloadpdf').click(function() { doSendForm({forceSubmit:true, format:'pdf', forceDownload: true}) });
-      $('#action-downloadlatex').click(function() { doSendForm({forceSubmit:true, format:'latex', forceDownload: true}) });
-      $('#action-restore').click(function(){ showRestoreMenu() });
-      $('.menu a').click(function(){ 
-        $('.menu').removeClass('open-menu'); $('.menu-btn').removeClass('close-btn'); 
-      });
-      
-      if(editHistory.length) {
-        $('#action-restore').show();
-      }
-
-    });
-
-       
-  </script>
-</body>
+      </script>
+   </body>
 </html>

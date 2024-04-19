@@ -5,12 +5,15 @@ import re
 import json
 import tempfile
 import io
+import argparse
 
 # 3rd party dependencies:
-from flask import Flask, request, Response, render_template
+from flask import Flask, request, Response, render_template,jsonify
 
 app = Flask(__name__)
-config = {}
+config = {
+    'base_path': "./"
+}
 
 def init():
     global config
@@ -201,11 +204,13 @@ def convert_markdown(markdown_text:str, format:str='latex', cursor_line:int=0):
     base_name = md_file.name.replace('.md','')
     tex_file_name = base_name + '.tex'
 
+    base_file_name = os.path.basename(base_name)
+
     with md_file:
         md_file.write(markdown_text.encode('utf-8'))
 
     exec([
-        '/usr/bin/pandoc',
+        'pandoc',
         md_file.name, 
         f'--template={get_template_path()}',
         '-t', 'latex',
@@ -221,25 +226,29 @@ def convert_markdown(markdown_text:str, format:str='latex', cursor_line:int=0):
         os.remove(tex_file_name)    
         return tex
     elif format == 'pdf':
+        output_temp_path = '/tmp/'
+
         exec([
-            '/usr/bin/xelatex',
-            '-synctex=1',
-            '-no-shell-escape'
-            '-output-directory=/tmp'
+            'xelatex',
+            '-synctex=1 ',
+            '-no-shell-escape '
+            f'-output-directory={output_temp_path} '
             '-interaction=nonstopmode',
             tex_file_name,
         ])
 
-        pdf_file_name = base_name + '.pdf'
+        output_base_name = output_temp_path + base_file_name
+
+        pdf_file_name = output_base_name + '.pdf'
         print(pdf_file_name)
         with open(pdf_file_name, 'rb') as pdf_file:
             pdf = pdf_file.read()
 
         os.remove(tex_file_name)    
         os.remove(pdf_file_name)
-        os.remove(base_name + '.aux')
-        os.remove(base_name + '.log')
-        os.remove(base_name + '.synctex.gz')
+        os.remove(output_base_name + '.aux')
+        os.remove(output_base_name + '.log')
+        os.remove(output_base_name + '.synctex.gz')
         
         return pdf
 
@@ -248,7 +257,42 @@ def get_index():
     with open(f'{get_own_path()}/README.md', encoding="utf-8") as welcome_file:
         welcome = welcome_file.read()
 
+    #welcome = ''
+
     return render_template('index.html', welcome=welcome)
+
+@app.route('/get_files')
+def get_files():
+    root_path = config['base_path'] # Change this to your folder path
+    files = []
+    for root, dirs, filenames in os.walk(root_path):
+        level = root.replace(root_path, '').count(os.sep)
+        rel_path  = root.replace(root_path, '')
+        if rel_path.startswith("/") :
+            rel_path = rel_path[1:]
+
+        parent_folder = os.path.basename(os.path.dirname(root))
+        files.append({'name': os.path.basename(root), 'type': 'folder', 'level': level, 'parent': parent_folder, 'path': rel_path})
+        for filename in filenames:
+            if filename.endswith('.md'):
+                files.append({'name': filename, 'type': 'file', 'level': level + 1,  'parent': os.path.basename(root), 'path': os.path.join(rel_path, filename)})
+    
+    return jsonify(files)
+
+@app.route('/read_file', methods=['POST'])
+def read_file():
+    file_name = request.form.get('file_name')
+    file_path = os.path.join(config['base_path'], file_name)
+
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            file_contents = file.read()
+
+        config['work_file'] = file_path
+        return jsonify({'success': True, 'file_contents': file_contents})
+    else:
+        return jsonify({'success': False, 'message': 'File not found'})
+
 
 @app.route('/generate', methods=['POST'])
 def generate():
@@ -262,14 +306,31 @@ def generate():
         file_extension = 'tex'
         format = 'latex'
         mimetype = 'application/latex'
-    else:
+    elif format == 'pdf':
         file_extension = 'pdf'
         format = 'pdf'
         mimetype = 'application/pdf'
+    else:
+        file_extension = 'md'
+        format = 'md'
+        mimetype = 'text/markdown'
 
     markdown = sanitize_input(markdown)
-    
-    latex = convert_markdown(markdown, format=format, cursor_line=cursor_line)
+
+    print("====" * 10)
+    print(config)
+
+    if 'work_file' in config:
+        work_file = config['work_file']
+        # Write the new content to the file
+        with open(work_file, 'w') as f:
+            f.write(markdown)
+        print("Save file change to ", work_file)
+
+    if format == 'md':
+        output = markdown
+    else:
+        output = convert_markdown(markdown, format=format, cursor_line=cursor_line)
 
     if forceDownload:
         headers = {'Content-Disposition': f'attachment; filename="BoxedTibetan.{file_extension}'}
@@ -277,16 +338,23 @@ def generate():
     else:
         headers = {'Content-Disposition': f'inline; filename="BoxedTibetan.{file_extension}'}
 
-    return Response(latex, mimetype=mimetype, headers=headers)
+    return Response(output, mimetype=mimetype, headers=headers)
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        # test mode: run directly via command line if the file name of a markdown file is passed
-        with open(sys.argv[1],'r', encoding="utf-8") as md_file:
-            markdown = md_file.read()    
-            print(convert_markdown(markdown, 'latex'))
+    parser = argparse.ArgumentParser(description="Read the first command-line argument")
+    parser.add_argument('--file_dir', type=str, default="", help="The first command-line argument")
+    args = parser.parse_args()
+    file_dir = args.file_dir
+
+    if file_dir:
+        config['base_path'] = os.path.abspath(file_dir)
     else:
-        # regular mode: run as flask web application
-        app.run()
+        config['base_path'] = os.getcwd()
+
+    print("Start app from path: ", config['base_path'], ".....")
+
+    
+    app.run()
+    
     
 application = app
