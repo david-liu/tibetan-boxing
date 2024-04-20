@@ -11,6 +11,7 @@ import argparse
 from flask import Flask, request, Response, render_template,jsonify
 
 app = Flask(__name__)
+app.config['TESTING'] = True
 config = {
     'base_path': "./"
 }
@@ -257,7 +258,8 @@ def get_index():
     with open(f'{get_own_path()}/README.md', encoding="utf-8") as welcome_file:
         welcome = welcome_file.read()
 
-    #welcome = ''
+    if "work_file" in config:
+        del config['work_file']
 
     return render_template('index.html', welcome=welcome)
 
@@ -297,7 +299,8 @@ def read_file():
 @app.route('/generate', methods=['POST'])
 def generate():
     file_extension = ''
-    markdown = request.form["textInput"] 
+    markdown = request.form["textInput"]
+
     format = request.form["format"]
     cursor_line = int(request.form["cursorLine"]) if "cursorLine" in request.form else 0
     forceDownload = request.form["forceDownload"] == 'true'
